@@ -1,127 +1,153 @@
-from enum import Enum
+import logging
 
-class Flag(Enum):
-    NoValue = -1
-    Linked = 0
-    HasValue = 1
+logging.basicConfig(level=logging.DEBUG, format='%(message)s')
 
-class Term:
-    def __init__(self, name, value='', flag=Flag.NoValue):
-        self.name = name
-        self.value = value
-        self.flag = flag
+def compare_atoms(atom1, atom2):
+    return (atom1[0] == atom2[0] and
+            atom1[1] == atom2[1] and
+            sorted(atom1[2]) == sorted(atom2[2]))
 
-    def __str__(self) -> str:
-        if self.flag == Flag.NoValue:
-            return self.name
-        
-        return self.value
+def unify_variable(var, value, substitutions):
+    if var in substitutions.keys():
+        return unify_term(substitutions[var], value, substitutions)
 
-class Atom:
-    def __init__(self, name, sign, terms):
-        self.name = name
-        self.sign = sign
-        self.terms = terms
+    if value in substitutions.keys():
+        return unify_term(var, substitutions[value], substitutions)
 
-    def can_be_unified(self, other):
-        if self.name != other.name:
-            return False
-        
-        if self.sign == other.sign:
-            return False
-        
-        if len(self.terms) != len(other.terms):
-            return False
-        
-        for l, r in zip(self.terms, other.terms):
-            if l.flag == Flag.HasValue and r.flag == Flag.HasValue:
-                if l.value != r.value:
-                    return False
-                
-        return True
+    substitutions[var] = value
+    logging.info(f"Унификация переменной {var} -> {value}")
+
+
+    return substitutions
+
+def unify_term(l, r, substitutions):
+    if l == r:
+        return substitutions
     
-    def __str__(self) -> str:
-        return f'{"!" if not self.sign else ""}{self.name}({", ".join(str(i) for i in self.terms)})'
-
-class Disjunct:
-    def __init__(self, atoms):
-        self.atoms = atoms
-
-    def __str__(self) -> str:
-        return f'{" v ".join(str(i) for i in self.atoms)}'
+    if l.islower():
+        return unify_variable(l, r, substitutions)
     
-
-def find_disjuncts_to_unify(disjuncts):
-    for disjunct in disjuncts:
-        for atom in disjunct.atoms:
-            if any([i.flag != Flag.HasValue for i in atom.terms]):
-                continue
-
-            for target_disjunct in disjuncts:
-                if target_disjunct == disjunct:
-                    continue
-
-                for target_atom in target_disjunct.atoms:
-                    if atom.can_be_unified(target_atom):
-                        return disjunct, atom, target_disjunct, target_atom
+    if r.islower():
+        return unify_variable(r,l, substitutions)
 
     return None
 
-def unify(disjuncts, main_disjunct, main_atom, target_disjunct, target_atom):
-    disjuncts.remove(main_disjunct)
+def unify_atom(l_terms, r_terms, substitutions):
+    for l, r in zip(l_terms, r_terms):
+        substitutions = unify_term(l, r, substitutions)
+        if substitutions is None:
+            return None
 
-    target_disjunct.atoms.remove(target_atom)
+    return substitutions
 
-    substitution = {}
+def apply_substitutions(clause, substitutions):
+    def substitute_term(term):
+        while term in substitutions:
+            term = substitutions[term]
 
-    for main_term, target_term in zip(main_atom.terms, target_atom.terms):
-        if target_term.flag == Flag.NoValue:
-            substitution[target_term.name] = main_term.name
+        return term
 
-    print(f'Замены: {substitution}')
+    def substitute_atom(atom):
+        sign, name, terms = atom
+        return (sign, name, [substitute_term(term) for term in terms])
 
-    for atom in target_disjunct.atoms:
-        for term in atom.terms:
-            if term.name in substitution.keys():
-                term.name = substitution[term.name]
-                term.value = term.name
-                term.flag = Flag.Linked
+    substituted_clause = [substitute_atom(atom) for atom in clause]
+    logging.info(f"Применение замен: {substitutions} -> {substituted_clause}")
+    return substituted_clause
 
+def resolve(l_clause, r_clause):
+    substitutions = {}
 
-def resolve(disjuncts):
+    logging.info(f"Резолюция между {l_clause} и {r_clause}")
+
+    for l in l_clause:
+        l_sign, l_name, l_terms = l
+        for r in r_clause:
+            r_sign, r_name, r_terms = r
+
+            logging.debug(f"Попытка унификации {l} и {r}")
+
+            if l_name != r_name:
+                logging.debug("Неудача, разные имена")
+                continue
+
+            if l_sign == r_sign:
+                logging.debug("Неудача, один знак")
+                continue
+
+            if len(l_terms) != len(r_terms):
+                logging.debug("Неудача, разное количество термов")
+                continue
+
+            substitutions = unify_atom(l_terms, r_terms, substitutions) 
+
+            if substitutions is not None:
+                new_clause = (
+                    [i for i in l_clause if i != l] +
+                    [i for i in r_clause if i != r]
+                )
+                logging.info(f"Резолюция между {l_clause} и {r_clause}, результат: {new_clause}")
+                return apply_substitutions(new_clause, substitutions)
+
+    return None
+
+def resolution(clauses):
     while True:
-        result = find_disjuncts_to_unify(disjuncts)
+        new_clauses = []
 
-        if result is None:
-            print(f'Нечего унифицировать: {" & ".join(str(i) for i in disjuncts)}')
-            break
+        for l in range(0, len(clauses)):
+            for r in range(l + 1, len(clauses)):
+                resolvent = resolve(clauses[l], clauses[r])
 
-        (disjunct, atom, target_disjunct, target_atom) = result
+                if resolvent is None:
+                    continue
 
-        print(f'Дизъюнкты: {" & ".join(str(i) for i in disjuncts)}')
-        print(f'Унифицируемые дизъюнкты: {disjunct}, {target_disjunct}')
-        print(f'Унифицируемые атомы: {atom}, {target_atom}')
+                if len(resolvent) == 0:
+                    return True
+                
+                for i in resolvent:
+                    if i not in new_clauses:
+                        new_clauses.append(i)
 
-        unify(disjuncts, disjunct, atom, target_disjunct, target_atom)
-
-        print('-----------------------------------------------------------')
-
+        if len(new_clauses) == 0:
+            return False
+        
+        for i in new_clauses:
+            if i not in clauses:
+                logging.debug(f'Добавляем кляузу {i}')
+                clauses.append([i])
 
 def example_1():
-    resolve(
-        [
-            Disjunct([
-                Atom("P1", True, [Term("BT", "BT", Flag.HasValue)])
-            ]),
-            Disjunct([
-                Atom("P2", False, [Term("DT", "DT", Flag.HasValue), Term("BT", "BT", Flag.HasValue)])
-            ]),
-            Disjunct([
-                Atom("P1", False, [Term("y")]),
-                Atom("P2", True, [Term("x"), Term("y")]),
-                Atom("l", False, [Term("x"), Term("y")])
-            ])
-        ]
-    )
+    logging.info("--- Пример 1: логический вывод R(b) ---")
+    clauses = [
+        [(True, "P", ["x"]), (True, "Q", ["x"])],
+        [(False, "P", ["a"]), (True, "R", ["b"])],
+        [(False, "Q", ["a"])]
+    ]
+    result = resolution(clauses)
+    logging.info("Результат: Доказано противоречие" if result else "Результат: Доказательство не найдено\n")
 
-example_1()
+def example_2():
+    logging.info("--- Пример 2: теорема о дружбе ---")
+    clauses = [
+        [(False, "Friends", ["Alice", "Bob"]), (True, "Friends", ["Bob", "Alice"])],
+        [(True, "Friends", ["Alice", "Bob"])],
+        [(False, "Friends", ["Bob", "Alice"])]
+    ]
+    result = resolution(clauses)
+    logging.info("Результат: Доказано противоречие" if result else "Результат: Доказательство не найдено\n")
+
+def example_3():
+    logging.info("--- Пример 3: дедукция ---")
+    clauses = [
+        [(False, "Rain", []), (True, "WetStreet", [])],
+        [(True, "Rain", [])],
+        [(False, "WetStreet", [])]
+    ]
+    result = resolution(clauses)
+    logging.info("Результат: Доказано противоречие" if result else "Результат: Доказательство не найдено\n")
+
+if __name__ == "__main__":
+    example_1()
+    # example_2()
+    # example_3()
